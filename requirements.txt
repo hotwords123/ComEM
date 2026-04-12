@@ -9,3 +9,6 @@ tenacity
 # dev tools
 jupyterlab
 seaborn
+matplotlib
+networkx
+plotly
