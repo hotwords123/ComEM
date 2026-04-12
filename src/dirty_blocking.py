@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from math import comb
 from pathlib import Path
 
@@ -199,12 +200,46 @@ def run_dirty_pipeline(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Dirty-ER blocking pipeline")
+    parser.add_argument(
+        "--dataset",
+        dest="dataset_name",
+        default="cora",
+        choices=["cora", "wdc"],
+        help="Dataset name (default: cora)",
+    )
+    parser.add_argument("--reader-root", type=Path, default=None)
+    parser.add_argument("--output-path", type=Path, default=None)
+    parser.add_argument("--topk", type=int, default=20)
+    parser.add_argument("--force-rebuild-index", action="store_true")
+    parser.add_argument("--sample-frac", type=float, default=None)
+    parser.add_argument("--sample-n", type=int, default=None)
+    parser.add_argument("--sample-seed", type=int, default=42)
+    args = parser.parse_args()
+
+    if args.reader_root is None or args.output_path is None:
+        if args.dataset_name == "cora":
+            default_reader_root = Path("data/pyJedAI/data/der/cora")
+            default_output_path = Path("data/llm4em/dirty/cora.csv")
+        elif args.dataset_name == "wdc":
+            default_reader_root = Path("data/wdc")
+            default_output_path = Path("data/llm4em/dirty/wdc.csv")
+        else:
+            raise ValueError(f"Unsupported dataset: {args.dataset_name}")
+
+        reader_root = args.reader_root or default_reader_root
+        output_path = args.output_path or default_output_path
+    else:
+        reader_root = args.reader_root
+        output_path = args.output_path
+
     run_dirty_pipeline(
-        dataset_name="cora",
-        reader_root=Path("data/pyJedAI/data/der/cora"),
-        topk=20,
-        output_path=Path("data/llm4em/dirty/cora.csv"),
-        force_rebuild_index=True,
-        sample_n=200,
-        sample_seed=42,
+        dataset_name=args.dataset_name,
+        reader_root=reader_root,
+        topk=args.topk,
+        output_path=output_path,
+        force_rebuild_index=args.force_rebuild_index,
+        sample_frac=args.sample_frac,
+        sample_n=args.sample_n,
+        sample_seed=args.sample_seed,
     )

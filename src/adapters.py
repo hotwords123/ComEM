@@ -88,10 +88,66 @@ class CoraAdapter(EntityTableAdapter):
         return pd.Series(cluster_ids, index=raw.index, name="cluster_id")
 
 
+class WdcProductsAdapter(EntityTableAdapter):
+    """Adapter for the WDC Products multi-class dataset (JSON Lines)."""
+
+    DEFAULT_CORE_FIELDS = ("brand", "title", "description", "price", "priceCurrency")
+    DEFAULT_FILENAME = "wdcproductsmulti80cc20rnd100un_gs.json"
+
+    def __init__(self, raw_path: Path, filename: str | None = None):
+        super().__init__(dataset_name="wdc", raw_path=raw_path)
+        self._filename = filename or self.DEFAULT_FILENAME
+
+    def load_entity_table(self) -> pd.DataFrame:
+        input_path = self.raw_path / self._filename
+        if not input_path.exists():
+            raise FileNotFoundError(
+                f"WDC input file not found: {input_path}. "
+                f"Expected a JSONL file like '{self.DEFAULT_FILENAME}'."
+            )
+
+        raw = pd.read_json(input_path, lines=True)
+        raw = raw.fillna("")
+
+        required_columns = {"id", "cluster_id"}
+        missing = required_columns - set(raw.columns)
+        if missing:
+            raise ValueError(f"{input_path.name} is missing columns: {sorted(missing)}")
+
+        raw = raw.rename(columns={"id": "entity_id"})
+        raw["entity_id"] = raw["entity_id"].astype(str)
+
+        text_columns = [c for c in self.DEFAULT_CORE_FIELDS if c in raw.columns]
+        if not text_columns:
+            text_columns = [c for c in raw.columns if c not in {"entity_id", "cluster_id"}]
+
+        print(f"Using text fields for WDC: {text_columns}")
+
+        raw["record"] = (
+            raw[text_columns]
+            .astype(str)
+            .agg(" ".join, axis=1)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+        )
+
+        if "cluster_id" in raw.columns:
+            raw["cluster_id"] = pd.to_numeric(raw["cluster_id"], errors="coerce")
+        if raw["cluster_id"].isna().any():
+            raise ValueError(
+                f"{input_path.name} contains missing/non-numeric cluster_id values"
+            )
+        raw["cluster_id"] = raw["cluster_id"].astype(int)
+
+        return raw[["entity_id", "cluster_id", "record"]].copy()
+
+
 def get_entity_table_adapter(
     dataset_name: str,
     raw_path: Path,
 ) -> EntityTableAdapter:
     if dataset_name == "cora":
         return CoraAdapter(raw_path)
+    if dataset_name in {"wdc", "wdc-products", "wdc_products"}:
+        return WdcProductsAdapter(raw_path)
     raise ValueError(f"Unsupported dirty ER dataset: {dataset_name}")
