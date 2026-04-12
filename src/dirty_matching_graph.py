@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
+import math
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -163,7 +165,282 @@ def visualize_graph_png(graph: nx.Graph, out_png: Path, title: str) -> None:
     plt.close()
 
 
-def visualize_graph_html(graph: nx.Graph, out_html: Path, title: str) -> None:
+def _truncate_text(text: str, max_chars: int = 240) -> str:
+    cleaned = " ".join(str(text).split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return f"{cleaned[: max_chars - 3]}..."
+
+
+def _build_entity_record_lookup(predicted_df: pd.DataFrame) -> dict[str, str]:
+    record_lookup: dict[str, str] = {}
+    for left, right, record_left, record_right in predicted_df[
+        ["id_left", "id_right", "record_left", "record_right"]
+    ].itertuples(index=False, name=None):
+        record_lookup[str(left)] = str(record_left)
+        record_lookup[str(right)] = str(record_right)
+    return record_lookup
+
+
+def _build_edge_outcome_lookup(predicted_df: pd.DataFrame) -> dict[tuple[str, str], str]:
+    outcome_lookup: dict[tuple[str, str], str] = {}
+    for left, right, pred, label in predicted_df[
+        ["id_left", "id_right", "pred", "label"]
+    ].itertuples(index=False, name=None):
+        key = tuple(sorted((str(left), str(right))))
+        pred_bool = bool(pred)
+        label_bool = bool(label)
+        if pred_bool and label_bool:
+            outcome = "TP"
+        elif pred_bool and not label_bool:
+            outcome = "FP"
+        elif (not pred_bool) and label_bool:
+            outcome = "FN"
+        else:
+            outcome = "TN"
+        outcome_lookup[key] = outcome
+    return outcome_lookup
+
+
+def _cluster_internal_layout(nodes: list[str], subgraph: nx.Graph) -> dict[str, tuple[float, float]]:
+    if len(nodes) == 1:
+        return {nodes[0]: (0.0, 0.0)}
+
+    if subgraph.number_of_edges() == 0:
+        angles = [2.0 * math.pi * idx / len(nodes) for idx in range(len(nodes))]
+        return {
+            node: (math.cos(angle), math.sin(angle))
+            for node, angle in zip(nodes, angles, strict=True)
+        }
+
+    layout = nx.spring_layout(subgraph, seed=42)
+    return {str(node): (float(x), float(y)) for node, (x, y) in layout.items()}
+
+
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    q = min(1.0, max(0.0, float(q)))
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    idx = q * (len(ordered) - 1)
+    low = int(math.floor(idx))
+    high = int(math.ceil(idx))
+    if low == high:
+        return float(ordered[low])
+    frac = idx - low
+    return float((1.0 - frac) * ordered[low] + frac * ordered[high])
+
+
+def _layout_nodes_by_gt(
+    nodes: list[str],
+    predicted_df: pd.DataFrame,
+    graph: nx.Graph,
+    edge_outcomes: dict[tuple[str, str], str],
+    cluster_layout_k: float | None,
+    cluster_layout_iterations: int,
+    cluster_layout_spread: float | None,
+    cluster_layout_norm_quantile: float,
+) -> tuple[dict[str, tuple[float, float]], dict[str, str]]:
+    cluster_lookup = _build_entity_cluster_lookup(predicted_df)
+    groups: dict[str, list[str]] = {}
+    node_cluster_map: dict[str, str] = {}
+    for node in nodes:
+        cluster_id = cluster_lookup.get(str(node), "unknown")
+        groups.setdefault(cluster_id, []).append(str(node))
+        node_cluster_map[str(node)] = cluster_id
+
+    sorted_clusters = sorted(groups.keys(), key=lambda x: (x == "unknown", x))
+    center_graph = nx.Graph()
+    center_graph.add_nodes_from(sorted_clusters)
+
+    for (left, right), outcome in edge_outcomes.items():
+        left_cluster = node_cluster_map.get(left)
+        right_cluster = node_cluster_map.get(right)
+        if left_cluster is None or right_cluster is None or left_cluster == right_cluster:
+            continue
+
+        # Emphasize cross-cluster false positives to expose misclassification corridors.
+        weight = 0.0
+        if outcome == "FP":
+            weight = 3.0
+        elif outcome == "FN":
+            weight = 1.0
+        elif outcome == "TP":
+            weight = 0.2
+        if weight <= 0.0:
+            continue
+
+        if center_graph.has_edge(left_cluster, right_cluster):
+            center_graph[left_cluster][right_cluster]["weight"] += weight
+        else:
+            center_graph.add_edge(left_cluster, right_cluster, weight=weight)
+
+    n_clusters = max(1, len(sorted_clusters))
+    effective_k = (
+        float(cluster_layout_k)
+        if cluster_layout_k is not None
+        else max(0.8, 2.5 / math.sqrt(n_clusters))
+    )
+    if center_graph.number_of_edges() > 0:
+        center_pos = nx.spring_layout(
+            center_graph,
+            seed=42,
+            weight="weight",
+            k=effective_k,
+            iterations=max(50, int(cluster_layout_iterations)),
+        )
+    else:
+        center_pos = {}
+
+    if not center_pos:
+        cols = max(1, int(math.ceil(math.sqrt(n_clusters))))
+        spacing = 4.0
+        center_pos = {
+            cluster_id: (
+                (idx % cols - (cols - 1) / 2.0) * spacing,
+                (-(idx // cols) + (math.ceil(n_clusters / cols) - 1) / 2.0) * spacing,
+            )
+            for idx, cluster_id in enumerate(sorted_clusters)
+        }
+    else:
+        xs = [float(x) for x, _ in center_pos.values()]
+        ys = [float(y) for _, y in center_pos.values()]
+        median_x = _quantile(xs, 0.5)
+        median_y = _quantile(ys, 0.5)
+        shifted = [(x - median_x, y - median_y) for x, y in center_pos.values()]
+        radii = [max(abs(x), abs(y)) for x, y in shifted]
+        normalizer = _quantile(radii, cluster_layout_norm_quantile)
+        normalizer = max(1e-6, float(normalizer))
+        scale = (
+            float(cluster_layout_spread)
+            if cluster_layout_spread is not None
+            else max(4.0, 0.95 * n_clusters)
+        )
+        center_pos = {
+            cluster_id: (
+                scale * max(-1.4, min(1.4, float(x - median_x) / normalizer)),
+                scale * max(-1.4, min(1.4, float(y - median_y) / normalizer)),
+            )
+            for cluster_id, (x, y) in center_pos.items()
+        }
+
+    pos: dict[str, tuple[float, float]] = {}
+    for cluster_id in sorted_clusters:
+        center_x, center_y = center_pos.get(cluster_id, (0.0, 0.0))
+        cluster_nodes = sorted(groups[cluster_id])
+        subgraph = graph.subgraph(cluster_nodes).copy()
+        local_pos = _cluster_internal_layout(cluster_nodes, subgraph)
+
+        scale = max(0.3, min(1.6, 0.28 * math.sqrt(len(cluster_nodes))))
+        for node in cluster_nodes:
+            x, y = local_pos[node]
+            pos[node] = (center_x + scale * x, center_y + scale * y)
+
+    return pos, node_cluster_map
+
+
+def _cluster_color_map(cluster_ids: list[str]) -> dict[str, str]:
+    palette = [
+        "#1f77b4",
+        "#2ca02c",
+        "#ff7f0e",
+        "#9467bd",
+        "#17becf",
+        "#e377c2",
+        "#8c564b",
+        "#bcbd22",
+        "#7f7f7f",
+        "#d62728",
+    ]
+    color_map: dict[str, str] = {}
+    sorted_ids = sorted(cluster_ids, key=lambda x: (x == "unknown", x))
+    for idx, cluster_id in enumerate(sorted_ids):
+        if cluster_id == "unknown":
+            color_map[cluster_id] = "#7f8c8d"
+        else:
+            color_map[cluster_id] = palette[idx % len(palette)]
+    return color_map
+
+
+def _build_edge_trace(
+    pos: dict[str, tuple[float, float]],
+    edges: list[tuple[str, str]],
+    name: str,
+    color: str,
+    width: float,
+    dash: str = "solid",
+    opacity: float = 1.0,
+) -> go.Scatter:
+    edge_x: list[float] = []
+    edge_y: list[float] = []
+    for left, right in edges:
+        x0, y0 = pos[left]
+        x1, y1 = pos[right]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+
+    return go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        mode="lines",
+        line={"width": width, "color": color, "dash": dash},
+        opacity=max(0.0, min(1.0, float(opacity))),
+        hoverinfo="none",
+        name=name,
+        showlegend=True,
+    )
+
+
+def _edge_focus_menu(dimmed_edge_opacity: float) -> list[dict[str, Any]]:
+    dim = max(0.0, min(1.0, float(dimmed_edge_opacity)))
+    return [
+        {
+            "type": "buttons",
+            "direction": "right",
+            "x": 0.0,
+            "y": 1.14,
+            "xanchor": "left",
+            "yanchor": "top",
+            "showactive": True,
+            "buttons": [
+                {
+                    "label": "All Edges",
+                    "method": "restyle",
+                    "args": [{"opacity": [1.0, 1.0, 1.0]}, [0, 1, 2]],
+                },
+                {
+                    "label": "Focus TP",
+                    "method": "restyle",
+                    "args": [{"opacity": [1.0, dim, dim]}, [0, 1, 2]],
+                },
+                {
+                    "label": "Focus FN",
+                    "method": "restyle",
+                    "args": [{"opacity": [dim, 1.0, dim]}, [0, 1, 2]],
+                },
+                {
+                    "label": "Focus FP",
+                    "method": "restyle",
+                    "args": [{"opacity": [dim, dim, 1.0]}, [0, 1, 2]],
+                },
+            ],
+        }
+    ]
+
+
+def visualize_graph_html(
+    graph: nx.Graph,
+    predicted_df: pd.DataFrame,
+    out_html: Path,
+    title: str,
+    dimmed_edge_opacity: float = 0.05,
+    cluster_layout_k: float | None = None,
+    cluster_layout_iterations: int = 350,
+    cluster_layout_spread: float | None = None,
+    cluster_layout_norm_quantile: float = 0.9,
+) -> None:
     out_html.parent.mkdir(parents=True, exist_ok=True)
 
     fig = go.Figure()
@@ -172,35 +449,106 @@ def visualize_graph_html(graph: nx.Graph, out_html: Path, title: str) -> None:
         fig.write_html(out_html, include_plotlyjs="cdn")
         return
 
-    pos = nx.spring_layout(graph, seed=42)
-
-    edge_x: list[float] = []
-    edge_y: list[float] = []
-    for left, right in graph.edges():
-        x0, y0 = pos[left]
-        x1, y1 = pos[right]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
-
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        mode="lines",
-        line={"width": 0.6, "color": "#95a5a6"},
-        hoverinfo="none",
+    nodes = sorted(str(node) for node in graph.nodes())
+    edge_outcomes = _build_edge_outcome_lookup(predicted_df)
+    pos, node_cluster_map = _layout_nodes_by_gt(
+        nodes,
+        predicted_df,
+        graph,
+        edge_outcomes,
+        cluster_layout_k=cluster_layout_k,
+        cluster_layout_iterations=cluster_layout_iterations,
+        cluster_layout_spread=cluster_layout_spread,
+        cluster_layout_norm_quantile=cluster_layout_norm_quantile,
     )
+    cluster_color_lookup = _cluster_color_map(list(set(node_cluster_map.values())))
+
+    tp_edges: list[tuple[str, str]] = []
+    fp_edges: list[tuple[str, str]] = []
+    fn_edges: list[tuple[str, str]] = []
+    for pair, outcome in edge_outcomes.items():
+        left, right = pair
+        if left not in pos or right not in pos:
+            continue
+        if outcome == "TP":
+            tp_edges.append((left, right))
+        elif outcome == "FP":
+            fp_edges.append((left, right))
+        elif outcome == "FN":
+            fn_edges.append((left, right))
+
+    fig.add_trace(
+        _build_edge_trace(
+            pos,
+            tp_edges,
+            f"TP GT+ solid ({len(tp_edges)})",
+            "#27ae60",
+            1.15,
+            opacity=1.0,
+        )
+    )
+    fig.add_trace(
+        _build_edge_trace(
+            pos,
+            fn_edges,
+            f"FN GT+ solid ({len(fn_edges)})",
+            "#f39c12",
+            1.15,
+            opacity=1.0,
+        )
+    )
+    fig.add_trace(
+        _build_edge_trace(
+            pos,
+            fp_edges,
+            f"FP dashed ({len(fp_edges)})",
+            "#e74c3c",
+            1.5,
+            dash="dash",
+            opacity=1.0,
+        )
+    )
+
+    node_tp_degree = {node: 0 for node in nodes}
+    node_fp_degree = {node: 0 for node in nodes}
+    node_fn_degree = {node: 0 for node in nodes}
+    for left, right in tp_edges:
+        node_tp_degree[left] += 1
+        node_tp_degree[right] += 1
+    for left, right in fp_edges:
+        node_fp_degree[left] += 1
+        node_fp_degree[right] += 1
+    for left, right in fn_edges:
+        node_fn_degree[left] += 1
+        node_fn_degree[right] += 1
+
+    record_lookup = _build_entity_record_lookup(predicted_df)
 
     node_x: list[float] = []
     node_y: list[float] = []
     node_text: list[str] = []
-    node_degree: list[int] = []
-    for node in graph.nodes():
-        x, y = pos[node]
+    node_colors: list[str] = []
+    for node in nodes:
+        x, y = pos[str(node)]
         node_x.append(x)
         node_y.append(y)
-        degree = int(graph.degree[node])
-        node_degree.append(degree)
-        node_text.append(f"id={node}<br>degree={degree}")
+        cluster_id = node_cluster_map.get(str(node), "unknown")
+        node_colors.append(cluster_color_lookup.get(cluster_id, "#7f8c8d"))
+        degree = int(graph.degree[str(node)])
+        rec = _truncate_text(record_lookup.get(str(node), ""))
+        node_text.append(
+            "<br>".join(
+                [
+                    f"id={html.escape(str(node))}",
+                    f"gt_cluster={html.escape(str(cluster_id))}",
+                    f"degree={degree}",
+                    f"tp_edges={node_tp_degree[str(node)]}",
+                    f"fp_edges={node_fp_degree[str(node)]}",
+                    f"fn_edges={node_fn_degree[str(node)]}",
+                    f"record={html.escape(rec)}",
+                ]
+            )
+        )
 
     node_trace = go.Scatter(
         x=node_x,
@@ -209,24 +557,24 @@ def visualize_graph_html(graph: nx.Graph, out_html: Path, title: str) -> None:
         hoverinfo="text",
         text=node_text,
         marker={
-            "size": 8,
-            "color": node_degree,
-            "colorscale": "Viridis",
-            "showscale": True,
-            "colorbar": {"title": "Degree"},
-            "line": {"width": 0},
+            "size": 9,
+            "color": node_colors,
+            "line": {"width": 0.5, "color": "#2c3e50"},
         },
+        name="Nodes (color by GT cluster)",
+        showlegend=True,
     )
 
-    fig.add_trace(edge_trace)
     fig.add_trace(node_trace)
     fig.update_layout(
         title=title,
         template="plotly_white",
-        margin={"l": 20, "r": 20, "t": 40, "b": 20},
+        margin={"l": 20, "r": 20, "t": 70, "b": 20},
         xaxis={"visible": False},
         yaxis={"visible": False},
-        showlegend=False,
+        showlegend=True,
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
+        updatemenus=_edge_focus_menu(dimmed_edge_opacity),
     )
     fig.write_html(out_html, include_plotlyjs="cdn")
 
@@ -448,6 +796,11 @@ def run_default_cora_pipeline() -> dict[str, Any]:
         sample_seed=42,
         max_workers=16,
         violation_mode="strict_negative",
+        dimmed_edge_opacity=0.05,
+        cluster_layout_k=None,
+        cluster_layout_iterations=350,
+        cluster_layout_spread=None,
+        cluster_layout_norm_quantile=0.9,
     )
 
 
@@ -464,6 +817,11 @@ def run_pipeline(
     sample_seed: int,
     max_workers: int,
     violation_mode: str,
+    dimmed_edge_opacity: float,
+    cluster_layout_k: float | None,
+    cluster_layout_iterations: int,
+    cluster_layout_spread: float | None,
+    cluster_layout_norm_quantile: float,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -495,7 +853,17 @@ def run_pipeline(
     png_out = output_dir / "matching_graph.png"
     html_out = output_dir / "matching_graph.html"
     visualize_graph_png(graph, png_out, title=f"{dataset_name} matching graph ({model_name})")
-    visualize_graph_html(graph, html_out, title=f"{dataset_name} matching graph ({model_name})")
+    visualize_graph_html(
+        graph,
+        predicted_df,
+        html_out,
+        title=f"{dataset_name} matching graph ({model_name})",
+        dimmed_edge_opacity=dimmed_edge_opacity,
+        cluster_layout_k=cluster_layout_k,
+        cluster_layout_iterations=cluster_layout_iterations,
+        cluster_layout_spread=cluster_layout_spread,
+        cluster_layout_norm_quantile=cluster_layout_norm_quantile,
+    )
 
     violations_df, violation_stats, comparison_stats = detect_transitivity_violations(
         graph=graph,
@@ -512,6 +880,13 @@ def run_pipeline(
         "sample_frac": sample_frac,
         "sample_n": sample_n,
         "sample_seed": sample_seed,
+        "visualization": {
+            "dimmed_edge_opacity": dimmed_edge_opacity,
+            "cluster_layout_k": cluster_layout_k,
+            "cluster_layout_iterations": cluster_layout_iterations,
+            "cluster_layout_spread": cluster_layout_spread,
+            "cluster_layout_norm_quantile": cluster_layout_norm_quantile,
+        },
         "metrics": metrics,
         "graph": graph_stats,
         "transitivity": {
@@ -566,6 +941,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-frac", type=float, default=None)
     parser.add_argument("--sample-n", type=int, default=200)
     parser.add_argument("--sample-seed", type=int, default=42)
+    parser.add_argument(
+        "--dimmed-edge-opacity",
+        type=float,
+        default=0.05,
+        help="Opacity for de-emphasized layers when using HTML focus buttons.",
+    )
+    parser.add_argument(
+        "--cluster-layout-k",
+        type=float,
+        default=None,
+        help="Spring-layout ideal distance for GT-cluster centers.",
+    )
+    parser.add_argument(
+        "--cluster-layout-iterations",
+        type=int,
+        default=350,
+        help="Iterations for GT-cluster center spring-layout.",
+    )
+    parser.add_argument(
+        "--cluster-layout-spread",
+        type=float,
+        default=None,
+        help="Global spread scale for cluster centers after normalization.",
+    )
+    parser.add_argument(
+        "--cluster-layout-norm-quantile",
+        type=float,
+        default=0.9,
+        help="Quantile used to robustly normalize cluster-center distances.",
+    )
 
     parser.add_argument(
         "--output-dir",
@@ -595,4 +1000,9 @@ if __name__ == "__main__":
         sample_seed=args.sample_seed,
         max_workers=args.max_workers,
         violation_mode=args.violation_mode,
+        dimmed_edge_opacity=args.dimmed_edge_opacity,
+        cluster_layout_k=args.cluster_layout_k,
+        cluster_layout_iterations=args.cluster_layout_iterations,
+        cluster_layout_spread=args.cluster_layout_spread,
+        cluster_layout_norm_quantile=args.cluster_layout_norm_quantile,
     )
