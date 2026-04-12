@@ -130,15 +130,59 @@ def build_candidates(
     return candidates
 
 
+def sample_entity_table(
+    entity_table: pd.DataFrame,
+    sample_frac: float | None = None,
+    sample_n: int | None = None,
+    sample_seed: int = 42,
+) -> pd.DataFrame:
+    if sample_frac is not None and sample_n is not None:
+        raise ValueError("Use either sample_frac or sample_n, not both")
+
+    if sample_frac is not None:
+        if not 0 < sample_frac <= 1:
+            raise ValueError("sample_frac must be in (0, 1]")
+        sampled = entity_table.sample(frac=sample_frac, random_state=sample_seed)
+    elif sample_n is not None:
+        if sample_n <= 0:
+            raise ValueError("sample_n must be > 0")
+        sample_n = min(sample_n, len(entity_table))
+        sampled = entity_table.sample(n=sample_n, random_state=sample_seed)
+    else:
+        sampled = entity_table
+
+    sampled = sampled.reset_index(drop=True)
+    if len(sampled) < 2:
+        raise ValueError("Sampled subset must contain at least 2 entities")
+
+    return sampled
+
+
 def run_dirty_pipeline(
     dataset_name: str,
     reader_root: Path,
     topk: int = 20,
     output_path: Path | None = None,
     force_rebuild_index: bool = False,
+    sample_frac: float | None = None,
+    sample_n: int | None = None,
+    sample_seed: int = 42,
 ):
     adapter = get_entity_table_adapter(dataset_name, reader_root)
-    entity_table = adapter.load_entity_table()
+    full_entity_table = adapter.load_entity_table()
+    entity_table = sample_entity_table(
+        full_entity_table,
+        sample_frac=sample_frac,
+        sample_n=sample_n,
+        sample_seed=sample_seed,
+    )
+    if len(entity_table) != len(full_entity_table):
+        print(
+            "Sampling subset: "
+            f"{len(entity_table)}/{len(full_entity_table)} entities "
+            f"(seed={sample_seed})"
+        )
+
     candidates = build_candidates(
         entity_table,
         topk=topk,
@@ -160,5 +204,7 @@ if __name__ == "__main__":
         reader_root=Path("data/pyJedAI/data/der/cora"),
         topk=20,
         output_path=Path("data/llm4em/dirty/cora.csv"),
-        force_rebuild_index=False,
+        force_rebuild_index=True,
+        sample_n=200,
+        sample_seed=42,
     )
