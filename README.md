@@ -17,7 +17,9 @@
 Entity matching (EM) is a critical step in entity resolution (ER). Recently, entity matching based on large language models (LLMs) has shown great promise. However, current LLM-based entity matching approaches typically follow a binary matching paradigm that ignores the global consistency between record relationships. In this paper, we investigate various methodologies for LLM-based entity matching that incorporate record interactions from different perspectives. Specifically, we comprehensively compare three representative strategies: matching, comparing, and selecting, and analyze their respective advantages and challenges in diverse scenarios. Based on our findings, we further design a compound entity matching framework (ComEM) that leverages the composition of multiple strategies and LLMs. ComEM benefits from the advantages of different sides and achieves improvements in both effectiveness and efficiency. Experimental results on 8 ER datasets and 9 LLMs verify the superiority of incorporating record interactions through the selecting strategy, as well as the further cost-effectiveness brought by ComEM.
 
 ## How to run
+
 First, install dependencies and prepare the data
+
 ```console
 # clone project
 git clone https://github.com/tshu-w/ComEM.git
@@ -32,15 +34,18 @@ pip install -r requirements.txt
 
 # prepare the data
 git clone https://github.com/AI-team-UoA/pyJedAI data/pyJedAI
+bash scripts/fetch_wdc.sh
 python src/blocking.py
 ```
 
 Next, to obtain the main results of the paper:
+
 ```console
 python src/{strategy}.py
 ```
 
 ## Citation
+
 ```
 @inproceedings{wang-etal-2025-match,
     title = "Match, Compare, or Select? An Investigation of Large Language Models for Entity Matching",
