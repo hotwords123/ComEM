@@ -732,6 +732,7 @@ def load_or_generate_candidates(
     force_rebuild_index: bool,
     sample_frac: float | None,
     sample_n: int | None,
+    sample_cluster_n: int | None,
     sample_seed: int,
 ) -> pd.DataFrame:
     if candidates_csv is not None:
@@ -745,6 +746,7 @@ def load_or_generate_candidates(
         force_rebuild_index=force_rebuild_index,
         sample_frac=sample_frac,
         sample_n=sample_n,
+        sample_cluster_n=sample_cluster_n,
         sample_seed=sample_seed,
     )
 
@@ -760,6 +762,7 @@ def run_default_cora_pipeline() -> dict[str, Any]:
         force_rebuild_index=True,
         sample_frac=None,
         sample_n=200,
+        sample_cluster_n=None,
         sample_seed=42,
         max_workers=16,
         violation_mode="strict_negative",
@@ -768,6 +771,88 @@ def run_default_cora_pipeline() -> dict[str, Any]:
         cluster_layout_spread=None,
         cluster_layout_norm_quantile=0.9,
     )
+
+
+def run_default_wdc_pipeline() -> dict[str, Any]:
+    return run_pipeline(
+        dataset_name="wdc",
+        reader_root=Path("data/wdc"),
+        model_name="gpt-4o-mini",
+        output_dir=Path("results/dirty_matching/wdc"),
+        candidates_csv=None,
+        topk=20,
+        force_rebuild_index=True,
+        sample_frac=None,
+        sample_n=None,
+        sample_cluster_n=100,
+        sample_seed=42,
+        max_workers=16,
+        violation_mode="strict_negative",
+        cluster_layout_k=None,
+        cluster_layout_iterations=350,
+        cluster_layout_spread=None,
+        cluster_layout_norm_quantile=0.9,
+    )
+
+
+def run_default_cddb_pipeline() -> dict[str, Any]:
+    return run_pipeline(
+        dataset_name="cddb",
+        reader_root=Path("data/pyJedAI/data/der/cddb"),
+        model_name="gpt-4o-mini",
+        output_dir=Path("results/dirty_matching/cddb"),
+        candidates_csv=None,
+        topk=20,
+        force_rebuild_index=True,
+        sample_frac=None,
+        sample_n=200,
+        sample_cluster_n=None,
+        sample_seed=42,
+        max_workers=16,
+        violation_mode="strict_negative",
+        cluster_layout_k=None,
+        cluster_layout_iterations=350,
+        cluster_layout_spread=None,
+        cluster_layout_norm_quantile=0.9,
+    )
+
+
+def run_default_musicbrainz_pipeline() -> dict[str, Any]:
+    return run_pipeline(
+        dataset_name="musicbrainz",
+        reader_root=Path("data/musicbrainz"),
+        model_name="gpt-4o-mini",
+        output_dir=Path("results/dirty_matching/musicbrainz"),
+        candidates_csv=None,
+        topk=20,
+        force_rebuild_index=True,
+        sample_frac=None,
+        sample_n=200,
+        sample_cluster_n=None,
+        sample_seed=42,
+        max_workers=16,
+        violation_mode="strict_negative",
+        cluster_layout_k=None,
+        cluster_layout_iterations=350,
+        cluster_layout_spread=None,
+        cluster_layout_norm_quantile=0.9,
+    )
+
+
+def _default_reader_root(dataset_name: str) -> Path:
+    if dataset_name == "cora":
+        return Path("data/pyJedAI/data/der/cora")
+    if dataset_name == "wdc":
+        return Path("data/wdc")
+    if dataset_name == "cddb":
+        return Path("data/pyJedAI/data/der/cddb")
+    if dataset_name == "musicbrainz":
+        return Path("data/musicbrainz")
+    raise ValueError(f"Unsupported dataset_name: {dataset_name}")
+
+
+def _default_output_dir(dataset_name: str) -> Path:
+    return Path("results/dirty_matching") / dataset_name
 
 
 def run_pipeline(
@@ -780,6 +865,7 @@ def run_pipeline(
     force_rebuild_index: bool,
     sample_frac: float | None,
     sample_n: int | None,
+    sample_cluster_n: int | None,
     sample_seed: int,
     max_workers: int,
     violation_mode: str,
@@ -798,6 +884,7 @@ def run_pipeline(
         force_rebuild_index=force_rebuild_index,
         sample_frac=sample_frac,
         sample_n=sample_n,
+        sample_cluster_n=sample_cluster_n,
         sample_seed=sample_seed,
     )
 
@@ -845,6 +932,7 @@ def run_pipeline(
         "topk": topk,
         "sample_frac": sample_frac,
         "sample_n": sample_n,
+        "sample_cluster_n": sample_cluster_n,
         "sample_seed": sample_seed,
         "visualization": {
             "cluster_layout_k": cluster_layout_k,
@@ -883,12 +971,17 @@ def run_pipeline(
 @click.command(
     help="Run dirty ER matching evaluation, build a match graph, and audit transitivity violations."
 )
-@click.option("--dataset-name", type=str, default="cora", show_default=True)
+@click.option(
+    "--dataset-name",
+    type=click.Choice(["cora", "wdc", "cddb", "musicbrainz"], case_sensitive=False),
+    default="cora",
+    show_default=True,
+)
 @click.option(
     "--reader-root",
     type=click.Path(path_type=Path),
-    default=Path("data/pyJedAI/data/der/cora"),
-    show_default=True,
+    default=None,
+    show_default=False,
 )
 @click.option("--candidates-csv", type=click.Path(path_type=Path), default=None)
 @click.option("--model-name", type=str, default="gpt-4o-mini", show_default=True)
@@ -901,7 +994,13 @@ def run_pipeline(
     show_default=True,
 )
 @click.option("--sample-frac", type=float, default=None)
-@click.option("--sample-n", type=int, default=200, show_default=True)
+@click.option("--sample-n", type=int, default=None)
+@click.option(
+    "--sample-cluster-n",
+    type=int,
+    default=None,
+    help="Sample N clusters (take all records in each sampled cluster).",
+)
 @click.option("--sample-seed", type=int, default=42, show_default=True)
 @click.option(
     "--cluster-layout-k",
@@ -932,8 +1031,8 @@ def run_pipeline(
 @click.option(
     "--output-dir",
     type=click.Path(path_type=Path),
-    default=Path("results/dirty_matching/cora"),
-    show_default=True,
+    default=None,
+    show_default=False,
 )
 @click.option(
     "--force-rebuild-index",
@@ -942,6 +1041,15 @@ def run_pipeline(
     help="Force rebuilding SparseRetriever index before searching.",
 )
 def main(*args, **kwargs) -> None:
+    dataset_name = str(kwargs.get("dataset_name") or "cora").lower()
+
+    if kwargs.get("reader_root") is None:
+        kwargs["reader_root"] = _default_reader_root(dataset_name)
+
+    if kwargs.get("output_dir") is None:
+        kwargs["output_dir"] = _default_output_dir(dataset_name)
+
+    kwargs["dataset_name"] = dataset_name
     run_pipeline(*args, **kwargs)
 
 
