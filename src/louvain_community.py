@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 import networkx as nx
@@ -34,7 +35,9 @@ def load_predictions(predictions_csv: Path) -> pd.DataFrame:
     required_cols = {"id_left", "id_right", "pred"}
     missing = required_cols - set(df.columns)
     if missing:
-        raise ValueError(f"Missing required columns in predictions CSV: {sorted(missing)}")
+        raise ValueError(
+            f"Missing required columns in predictions CSV: {sorted(missing)}"
+        )
 
     out = df.copy()
     out["id_left"] = out["id_left"].astype(str)
@@ -56,7 +59,9 @@ def build_graph(df: pd.DataFrame, edge_column: str) -> nx.Graph:
     edges_df = df[df[edge_column].map(_parse_bool)][["id_left", "id_right"]].copy()
     edges_df["src"] = edges_df[["id_left", "id_right"]].min(axis=1)
     edges_df["dst"] = edges_df[["id_left", "id_right"]].max(axis=1)
-    edges = edges_df[["src", "dst"]].drop_duplicates().itertuples(index=False, name=None)
+    edges = (
+        edges_df[["src", "dst"]].drop_duplicates().itertuples(index=False, name=None)
+    )
     graph.add_edges_from(edges)
     return graph
 
@@ -74,7 +79,9 @@ def detect_louvain_communities(
         resolution=resolution,
         seed=seed,
     )
-    communities = [set(str(node) for node in community) for community in communities_raw]
+    communities = [
+        set(str(node) for node in community) for community in communities_raw
+    ]
     communities.sort(key=len, reverse=True)
 
     node_to_community: dict[str, int] = {}
@@ -88,6 +95,112 @@ def detect_louvain_communities(
         modularity = float(nx.community.modularity(graph, communities))
 
     return communities, node_to_community, modularity
+
+
+def detect_recursive_louvain_communities(
+    graph: nx.Graph,
+    resolution: float,
+    seed: int,
+    max_community_size: int,
+    max_depth: int,
+    resolution_scale: float,
+) -> tuple[list[set[str]], dict[str, int], float, dict[str, Any]]:
+    if max_community_size < 1:
+        raise ValueError("max_community_size must be >= 1")
+    if max_depth < 0:
+        raise ValueError("max_depth must be >= 0")
+    if resolution_scale <= 1.0:
+        raise ValueError("resolution_scale must be > 1.0")
+    if graph.number_of_nodes() == 0:
+        raise ValueError("Input graph must have at least one node for community detection")
+
+    split_attempts = 0
+    split_successes = 0
+    stopped_by_depth_limit = 0
+    stopped_by_no_split = 0
+    call_counter = 0
+
+    def _next_seed(depth: int) -> int:
+        nonlocal call_counter
+        call_counter += 1
+        return int(seed + depth * 1009 + call_counter)
+
+    def _recursive_split(
+        nodes: set[str],
+        depth: int,
+        local_resolution: float,
+    ) -> list[set[str]]:
+        nonlocal split_attempts
+        nonlocal split_successes
+        nonlocal stopped_by_depth_limit
+        nonlocal stopped_by_no_split
+
+        if len(nodes) <= max_community_size:
+            return [nodes]
+        if depth >= max_depth:
+            stopped_by_depth_limit += 1
+            return [nodes]
+
+        split_attempts += 1
+        subgraph = graph.subgraph(nodes).copy()
+        next_resolution = float(local_resolution * resolution_scale)
+        sub_communities_raw = nx.community.louvain_communities(
+            subgraph,
+            resolution=next_resolution,
+            seed=_next_seed(depth),
+        )
+        sub_communities = [
+            set(str(node) for node in community) for community in sub_communities_raw
+        ]
+
+        if len(sub_communities) <= 1:
+            stopped_by_no_split += 1
+            return [nodes]
+
+        split_successes += 1
+        leaves: list[set[str]] = []
+        for community in sub_communities:
+            leaves.extend(_recursive_split(community, depth + 1, next_resolution))
+        return leaves
+
+    root_communities_raw = nx.community.louvain_communities(
+        graph,
+        resolution=resolution,
+        seed=_next_seed(0),
+    )
+    root_communities = [
+        set(str(node) for node in community) for community in root_communities_raw
+    ]
+
+    final_communities: list[set[str]] = []
+    for community in root_communities:
+        final_communities.extend(_recursive_split(community, 0, resolution))
+    final_communities.sort(key=len, reverse=True)
+
+    node_to_community: dict[str, int] = {}
+    for cid, community in enumerate(final_communities):
+        for node in community:
+            node_to_community[node] = cid
+
+    if graph.number_of_edges() == 0 or not final_communities:
+        modularity = 0.0
+    else:
+        modularity = float(nx.community.modularity(graph, final_communities))
+
+    stats = {
+        "enabled": True,
+        "max_community_size": int(max_community_size),
+        "max_depth": int(max_depth),
+        "base_resolution": float(resolution),
+        "resolution_scale": float(resolution_scale),
+        "root_communities": int(len(root_communities)),
+        "split_attempts": int(split_attempts),
+        "split_successes": int(split_successes),
+        "stopped_by_depth_limit": int(stopped_by_depth_limit),
+        "stopped_by_no_split": int(stopped_by_no_split),
+        "max_leaf_size": int(max((len(c) for c in final_communities), default=0)),
+    }
+    return final_communities, node_to_community, modularity, stats
 
 
 def _community_color_map(community_ids: list[int]) -> dict[int, str]:
@@ -124,7 +237,9 @@ def visualize_png(
     pos = nx.spring_layout(graph, seed=seed)
     nodes = sorted(str(node) for node in graph.nodes())
     color_map = _community_color_map(list(node_to_community.values()))
-    node_colors = [color_map.get(node_to_community.get(node, -1), "#7f8c8d") for node in nodes]
+    node_colors = [
+        color_map.get(node_to_community.get(node, -1), "#7f8c8d") for node in nodes
+    ]
 
     nx.draw_networkx_edges(graph, pos, alpha=0.25, width=0.7, edge_color="#95a5a6")
     nx.draw_networkx_nodes(
@@ -229,6 +344,8 @@ def save_outputs(
     communities: list[set[str]],
     modularity: float,
     out_dir: Path,
+    community_method: str,
+    recursion_stats: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -255,6 +372,7 @@ def save_outputs(
     summary = {
         "nodes": int(graph.number_of_nodes()),
         "edges": int(graph.number_of_edges()),
+        "community_method": community_method,
         "connected_components": int(nx.number_connected_components(graph))
         if graph.number_of_nodes()
         else 0,
@@ -262,6 +380,7 @@ def save_outputs(
         "communities": int(len(communities)),
         "community_sizes_top10": [int(len(c)) for c in communities[:10]],
         "modularity": float(modularity),
+        "recursive": recursion_stats,
         "files": {
             "communities_csv": str(communities_csv),
             "summary_json": str(summary_json),
@@ -280,7 +399,9 @@ def save_outputs(
     }
 
 
-@click.command(help="Run Louvain community detection for matching predictions and visualize communities.")
+@click.command(
+    help="Run Louvain community detection for matching predictions and visualize communities."
+)
 @click.option(
     "--predictions-csv",
     type=click.Path(path_type=Path, exists=True),
@@ -297,6 +418,27 @@ def save_outputs(
 @click.option("--resolution", type=float, default=1.0, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
 @click.option(
+    "--max-community-size",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Recursively split communities larger than this size.",
+)
+@click.option(
+    "--max-recursion-depth",
+    type=int,
+    default=6,
+    show_default=True,
+    help="Stop recursive splitting when this depth is reached.",
+)
+@click.option(
+    "--resolution-scale",
+    type=float,
+    default=1.25,
+    show_default=True,
+    help="Resolution multiplier applied at each recursive split.",
+)
+@click.option(
     "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
@@ -307,18 +449,28 @@ def main(
     edge_column: str,
     resolution: float,
     seed: int,
+    max_community_size: int,
+    max_recursion_depth: int,
+    resolution_scale: float,
     output_dir: Path | None,
 ) -> None:
     df = load_predictions(predictions_csv)
     graph = build_graph(df, edge_column=edge_column)
-    communities, node_to_community, modularity = detect_louvain_communities(
-        graph,
-        resolution=resolution,
-        seed=seed,
+    communities, node_to_community, modularity, recursion_stats = (
+        detect_recursive_louvain_communities(
+            graph,
+            resolution=resolution,
+            seed=seed,
+            max_community_size=max_community_size,
+            max_depth=max_recursion_depth,
+            resolution_scale=resolution_scale,
+        )
     )
 
     out_dir = output_dir if output_dir is not None else predictions_csv.parent
-    title = f"Louvain Communities ({predictions_csv.stem}, edge={edge_column})"
+    title = (
+        f"Recursive Louvain Communities ({predictions_csv.stem}, edge={edge_column})"
+    )
 
     visualize_png(
         graph,
@@ -341,16 +493,25 @@ def main(
         communities,
         modularity,
         out_dir=out_dir,
+        community_method="recursive_louvain",
+        recursion_stats=recursion_stats,
     )
 
     print("Louvain run completed.")
-    print(json.dumps({
-        "nodes": graph.number_of_nodes(),
-        "edges": graph.number_of_edges(),
-        "communities": len(communities),
-        "modularity": modularity,
-        "files": files,
-    }, ensure_ascii=True, indent=2))
+    print(
+        json.dumps(
+            {
+                "nodes": graph.number_of_nodes(),
+                "edges": graph.number_of_edges(),
+                "communities": len(communities),
+                "modularity": modularity,
+                "recursive": recursion_stats,
+                "files": files,
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":
