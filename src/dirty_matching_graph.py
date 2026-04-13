@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import math
@@ -8,6 +7,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+import click
 import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
@@ -91,7 +91,9 @@ def predict_candidates(
     labels = df["label"].tolist()
     preds = df["pred"].tolist()
 
-    report = classification_report(labels, preds, digits=4, output_dict=True, zero_division=0)
+    report = classification_report(
+        labels, preds, digits=4, output_dict=True, zero_division=0
+    )
     matrix = confusion_matrix(labels, preds, labels=[False, True]).tolist()
 
     metrics = {
@@ -112,11 +114,15 @@ def predict_candidates(
 def build_matching_graph(predicted_df: pd.DataFrame) -> nx.Graph:
     graph = nx.Graph()
 
-    nodes = set(predicted_df["id_left"].tolist()) | set(predicted_df["id_right"].tolist())
+    nodes = set(predicted_df["id_left"].tolist()) | set(
+        predicted_df["id_right"].tolist()
+    )
     graph.add_nodes_from(nodes)
 
     matched = predicted_df[predicted_df["pred"]]
-    graph.add_edges_from(matched[["id_left", "id_right"]].itertuples(index=False, name=None))
+    graph.add_edges_from(
+        matched[["id_left", "id_right"]].itertuples(index=False, name=None)
+    )
     return graph
 
 
@@ -182,7 +188,9 @@ def _build_entity_record_lookup(predicted_df: pd.DataFrame) -> dict[str, str]:
     return record_lookup
 
 
-def _build_edge_outcome_lookup(predicted_df: pd.DataFrame) -> dict[tuple[str, str], str]:
+def _build_edge_outcome_lookup(
+    predicted_df: pd.DataFrame,
+) -> dict[tuple[str, str], str]:
     outcome_lookup: dict[tuple[str, str], str] = {}
     for left, right, pred, label in predicted_df[
         ["id_left", "id_right", "pred", "label"]
@@ -202,7 +210,9 @@ def _build_edge_outcome_lookup(predicted_df: pd.DataFrame) -> dict[tuple[str, st
     return outcome_lookup
 
 
-def _cluster_internal_layout(nodes: list[str], subgraph: nx.Graph) -> dict[str, tuple[float, float]]:
+def _cluster_internal_layout(
+    nodes: list[str], subgraph: nx.Graph
+) -> dict[str, tuple[float, float]]:
     if len(nodes) == 1:
         return {nodes[0]: (0.0, 0.0)}
 
@@ -258,7 +268,11 @@ def _layout_nodes_by_gt(
     for (left, right), outcome in edge_outcomes.items():
         left_cluster = node_cluster_map.get(left)
         right_cluster = node_cluster_map.get(right)
-        if left_cluster is None or right_cluster is None or left_cluster == right_cluster:
+        if (
+            left_cluster is None
+            or right_cluster is None
+            or left_cluster == right_cluster
+        ):
             continue
 
         # Emphasize cross-cluster false positives to expose misclassification corridors.
@@ -371,7 +385,6 @@ def _build_edge_trace(
     color: str,
     width: float,
     dash: str = "solid",
-    opacity: float = 1.0,
 ) -> go.Scatter:
     edge_x: list[float] = []
     edge_y: list[float] = []
@@ -386,48 +399,10 @@ def _build_edge_trace(
         y=edge_y,
         mode="lines",
         line={"width": width, "color": color, "dash": dash},
-        opacity=max(0.0, min(1.0, float(opacity))),
         hoverinfo="none",
         name=name,
         showlegend=True,
     )
-
-
-def _edge_focus_menu(dimmed_edge_opacity: float) -> list[dict[str, Any]]:
-    dim = max(0.0, min(1.0, float(dimmed_edge_opacity)))
-    return [
-        {
-            "type": "buttons",
-            "direction": "right",
-            "x": 0.0,
-            "y": 1.14,
-            "xanchor": "left",
-            "yanchor": "top",
-            "showactive": True,
-            "buttons": [
-                {
-                    "label": "All Edges",
-                    "method": "restyle",
-                    "args": [{"opacity": [1.0, 1.0, 1.0]}, [0, 1, 2]],
-                },
-                {
-                    "label": "Focus TP",
-                    "method": "restyle",
-                    "args": [{"opacity": [1.0, dim, dim]}, [0, 1, 2]],
-                },
-                {
-                    "label": "Focus FN",
-                    "method": "restyle",
-                    "args": [{"opacity": [dim, 1.0, dim]}, [0, 1, 2]],
-                },
-                {
-                    "label": "Focus FP",
-                    "method": "restyle",
-                    "args": [{"opacity": [dim, dim, 1.0]}, [0, 1, 2]],
-                },
-            ],
-        }
-    ]
 
 
 def visualize_graph_html(
@@ -435,7 +410,6 @@ def visualize_graph_html(
     predicted_df: pd.DataFrame,
     out_html: Path,
     title: str,
-    dimmed_edge_opacity: float = 0.05,
     cluster_layout_k: float | None = None,
     cluster_layout_iterations: int = 350,
     cluster_layout_spread: float | None = None,
@@ -478,34 +452,14 @@ def visualize_graph_html(
             fn_edges.append((left, right))
 
     fig.add_trace(
-        _build_edge_trace(
-            pos,
-            tp_edges,
-            f"TP GT+ solid ({len(tp_edges)})",
-            "#27ae60",
-            1.15,
-            opacity=1.0,
-        )
+        _build_edge_trace(pos, tp_edges, f"TP ({len(tp_edges)})", "#27ae60", 1.15)
+    )
+    fig.add_trace(
+        _build_edge_trace(pos, fn_edges, f"FN ({len(fn_edges)})", "#f39c12", 1.15)
     )
     fig.add_trace(
         _build_edge_trace(
-            pos,
-            fn_edges,
-            f"FN GT+ solid ({len(fn_edges)})",
-            "#f39c12",
-            1.15,
-            opacity=1.0,
-        )
-    )
-    fig.add_trace(
-        _build_edge_trace(
-            pos,
-            fp_edges,
-            f"FP dashed ({len(fp_edges)})",
-            "#e74c3c",
-            1.5,
-            dash="dash",
-            opacity=1.0,
+            pos, fp_edges, f"FP ({len(fp_edges)})", "#e74c3c", 1.5, dash="dash"
         )
     )
 
@@ -567,19 +521,26 @@ def visualize_graph_html(
 
     fig.add_trace(node_trace)
     fig.update_layout(
-        title=title,
+        title={"text": title, "x": 0.5, "xanchor": "center", "y": 0.98, "yanchor": "top"},
         template="plotly_white",
-        margin={"l": 20, "r": 20, "t": 70, "b": 20},
+        margin={"l": 20, "r": 20, "t": 60, "b": 80},
         xaxis={"visible": False},
         yaxis={"visible": False},
         showlegend=True,
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
-        updatemenus=_edge_focus_menu(dimmed_edge_opacity),
+        legend={
+            "orientation": "h",
+            "yanchor": "top",
+            "y": -0.08,
+            "xanchor": "center",
+            "x": 0.5,
+        },
     )
     fig.write_html(out_html, include_plotlyjs="cdn")
 
 
-def _build_pair_prediction_lookup(predicted_df: pd.DataFrame) -> dict[tuple[str, str], bool]:
+def _build_pair_prediction_lookup(
+    predicted_df: pd.DataFrame,
+) -> dict[tuple[str, str], bool]:
     lookup: dict[tuple[str, str], bool] = {}
     for left, right, pred in predicted_df[["id_left", "id_right", "pred"]].itertuples(
         index=False,
@@ -686,7 +647,9 @@ def _collect_mode_violations(
     involved_nodes = sorted(
         {node for row in violations for node in (row["a"], row["b"], row["c"])}
     )
-    violating_pairs = sorted({tuple(sorted((row["a"], row["c"]))) for row in violations})
+    violating_pairs = sorted(
+        {tuple(sorted((row["a"], row["c"]))) for row in violations}
+    )
     gt_partition_counts = (
         pd.DataFrame(violations)["gt_partition"].value_counts().to_dict()
         if violations
@@ -698,7 +661,9 @@ def _collect_mode_violations(
         "violating_triplets": int(len(violations)),
         "violating_ac_pairs": int(len(violating_pairs)),
         "involved_nodes": int(len(involved_nodes)),
-        "violation_rate": float(len(violations) / total_wedges) if total_wedges else 0.0,
+        "violation_rate": float(len(violations) / total_wedges)
+        if total_wedges
+        else 0.0,
         "gt_partition_counts": gt_partition_counts,
     }
     return violations, stats
@@ -734,7 +699,9 @@ def detect_transitivity_violations(
     comparison = {
         "strict_negative": strict_stats,
         "include_missing": include_stats,
-        "delta_include_minus_strict": int(len(include_violations) - len(strict_violations)),
+        "delta_include_minus_strict": int(
+            len(include_violations) - len(strict_violations)
+        ),
     }
 
     violations_df = pd.DataFrame(requested_violations)
@@ -796,7 +763,6 @@ def run_default_cora_pipeline() -> dict[str, Any]:
         sample_seed=42,
         max_workers=16,
         violation_mode="strict_negative",
-        dimmed_edge_opacity=0.05,
         cluster_layout_k=None,
         cluster_layout_iterations=350,
         cluster_layout_spread=None,
@@ -817,7 +783,6 @@ def run_pipeline(
     sample_seed: int,
     max_workers: int,
     violation_mode: str,
-    dimmed_edge_opacity: float,
     cluster_layout_k: float | None,
     cluster_layout_iterations: int,
     cluster_layout_spread: float | None,
@@ -852,13 +817,14 @@ def run_pipeline(
 
     png_out = output_dir / "matching_graph.png"
     html_out = output_dir / "matching_graph.html"
-    visualize_graph_png(graph, png_out, title=f"{dataset_name} matching graph ({model_name})")
+    visualize_graph_png(
+        graph, png_out, title=f"{dataset_name} matching graph ({model_name})"
+    )
     visualize_graph_html(
         graph,
         predicted_df,
         html_out,
         title=f"{dataset_name} matching graph ({model_name})",
-        dimmed_edge_opacity=dimmed_edge_opacity,
         cluster_layout_k=cluster_layout_k,
         cluster_layout_iterations=cluster_layout_iterations,
         cluster_layout_spread=cluster_layout_spread,
@@ -881,7 +847,6 @@ def run_pipeline(
         "sample_n": sample_n,
         "sample_seed": sample_seed,
         "visualization": {
-            "dimmed_edge_opacity": dimmed_edge_opacity,
             "cluster_layout_k": cluster_layout_k,
             "cluster_layout_iterations": cluster_layout_iterations,
             "cluster_layout_spread": cluster_layout_spread,
@@ -915,94 +880,70 @@ def run_pipeline(
     return summary
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run dirty ER matching evaluation, build a match graph, and audit transitivity violations."
-        )
-    )
-    parser.add_argument("--dataset-name", type=str, default="cora")
-    parser.add_argument(
-        "--reader-root",
-        type=Path,
-        default=Path("data/pyJedAI/data/der/cora"),
-    )
-    parser.add_argument("--candidates-csv", type=Path, default=None)
-    parser.add_argument("--model-name", type=str, default="gpt-4o-mini")
-    parser.add_argument("--topk", type=int, default=20)
-    parser.add_argument("--max-workers", type=int, default=16)
-    parser.add_argument(
-        "--violation-mode",
-        type=str,
-        choices=["strict_negative", "include_missing"],
-        default="strict_negative",
-    )
-
-    parser.add_argument("--sample-frac", type=float, default=None)
-    parser.add_argument("--sample-n", type=int, default=200)
-    parser.add_argument("--sample-seed", type=int, default=42)
-    parser.add_argument(
-        "--dimmed-edge-opacity",
-        type=float,
-        default=0.05,
-        help="Opacity for de-emphasized layers when using HTML focus buttons.",
-    )
-    parser.add_argument(
-        "--cluster-layout-k",
-        type=float,
-        default=None,
-        help="Spring-layout ideal distance for GT-cluster centers.",
-    )
-    parser.add_argument(
-        "--cluster-layout-iterations",
-        type=int,
-        default=350,
-        help="Iterations for GT-cluster center spring-layout.",
-    )
-    parser.add_argument(
-        "--cluster-layout-spread",
-        type=float,
-        default=None,
-        help="Global spread scale for cluster centers after normalization.",
-    )
-    parser.add_argument(
-        "--cluster-layout-norm-quantile",
-        type=float,
-        default=0.9,
-        help="Quantile used to robustly normalize cluster-center distances.",
-    )
-
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("results/dirty_matching/cora"),
-    )
-    parser.add_argument(
-        "--force-rebuild-index",
-        action="store_true",
-        help="Force rebuilding SparseRetriever index before searching.",
-    )
-    return parser.parse_args()
+@click.command(
+    help="Run dirty ER matching evaluation, build a match graph, and audit transitivity violations."
+)
+@click.option("--dataset-name", type=str, default="cora", show_default=True)
+@click.option(
+    "--reader-root",
+    type=click.Path(path_type=Path),
+    default=Path("data/pyJedAI/data/der/cora"),
+    show_default=True,
+)
+@click.option("--candidates-csv", type=click.Path(path_type=Path), default=None)
+@click.option("--model-name", type=str, default="gpt-4o-mini", show_default=True)
+@click.option("--topk", type=int, default=20, show_default=True)
+@click.option("--max-workers", type=int, default=16, show_default=True)
+@click.option(
+    "--violation-mode",
+    type=click.Choice(["strict_negative", "include_missing"]),
+    default="strict_negative",
+    show_default=True,
+)
+@click.option("--sample-frac", type=float, default=None)
+@click.option("--sample-n", type=int, default=200, show_default=True)
+@click.option("--sample-seed", type=int, default=42, show_default=True)
+@click.option(
+    "--cluster-layout-k",
+    type=float,
+    default=None,
+    help="Spring-layout ideal distance for GT-cluster centers.",
+)
+@click.option(
+    "--cluster-layout-iterations",
+    type=int,
+    default=350,
+    show_default=True,
+    help="Iterations for GT-cluster center spring-layout.",
+)
+@click.option(
+    "--cluster-layout-spread",
+    type=float,
+    default=None,
+    help="Global spread scale for cluster centers after normalization.",
+)
+@click.option(
+    "--cluster-layout-norm-quantile",
+    type=float,
+    default=0.9,
+    show_default=True,
+    help="Quantile used to robustly normalize cluster-center distances.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=Path("results/dirty_matching/cora"),
+    show_default=True,
+)
+@click.option(
+    "--force-rebuild-index",
+    is_flag=True,
+    default=False,
+    help="Force rebuilding SparseRetriever index before searching.",
+)
+def main(*args, **kwargs) -> None:
+    run_pipeline(*args, **kwargs)
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    run_pipeline(
-        dataset_name=args.dataset_name,
-        reader_root=args.reader_root,
-        model_name=args.model_name,
-        output_dir=args.output_dir,
-        candidates_csv=args.candidates_csv,
-        topk=args.topk,
-        force_rebuild_index=args.force_rebuild_index,
-        sample_frac=args.sample_frac,
-        sample_n=args.sample_n,
-        sample_seed=args.sample_seed,
-        max_workers=args.max_workers,
-        violation_mode=args.violation_mode,
-        dimmed_edge_opacity=args.dimmed_edge_opacity,
-        cluster_layout_k=args.cluster_layout_k,
-        cluster_layout_iterations=args.cluster_layout_iterations,
-        cluster_layout_spread=args.cluster_layout_spread,
-        cluster_layout_norm_quantile=args.cluster_layout_norm_quantile,
-    )
+    main()
