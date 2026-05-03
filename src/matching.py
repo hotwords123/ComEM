@@ -50,9 +50,9 @@ Record 2: {{ record_right }}
                 model=self.model,
                 seed=42,
                 temperature=0.0,
-                logprobs=self.model.startswith("gpt"),
-                top_logprobs=3 if self.model.startswith("gpt") else None,
-                max_tokens=3,
+                logprobs=use_prob,
+                top_logprobs=3 if use_prob else None,
+                max_tokens=2000,
             )
             if use_prob:
                 assert self.model.startswith("gpt")
@@ -87,7 +87,7 @@ Record 2: {{ record_right }}
         instance,
         single_match: bool = False,
     ) -> list[bool]:
-        scores = self.score(instance)
+        scores = self.score(instance, use_prob=self.model.startswith("gpt-4o"))
         if single_match:
             max_score = max(scores)
             preds = [sc >= max_score and sc > 0 for sc in scores]

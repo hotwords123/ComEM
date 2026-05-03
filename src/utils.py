@@ -5,13 +5,15 @@ from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
-@retry(stop=stop_after_attempt(10), wait=wait_exponential(multiplier=1, max=10))
+# @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10))
 def openai_chat_complete(
     messages,
     model,
     client=OpenAI(),  # noqa: B008
     **kwargs,
 ):
+    if "max_tokens" in kwargs:
+        kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
     response = client.chat.completions.create(messages=messages, model=model, **kwargs)
     if response.choices is None:
         raise ValueError(f"Error response: {response}")
@@ -165,6 +167,9 @@ class APICostCalculator:
         "gpt-3.5-turbo-0613": {"prompt": 1.5, "completion": 2.0},
         "gpt-3.5-turbo-16k-0613": {"prompt": 3, "completion": 4.0},
         "gpt-3.5-turbo-1106": {"prompt": 1.0, "completion": 2.0},
+        "gpt-5-nano": {"prompt": 0.05, "completion": 0.40},
+        "gpt-5-mini": {"prompt": 0.25, "completion": 2.00},
+        "gemini-3-flash-preview": {"prompt": 0.5, "completion": 3.0},
     }
     # fmt: on
 
