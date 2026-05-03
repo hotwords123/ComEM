@@ -84,7 +84,7 @@ from src.dirty_matching.pipeline import run_pipeline
     default=False,
     help="Enable four-stage refine ER pipeline (Louvain + local/global LLM resolving).",
 )
-@click.option("--refine-model-name", type=str, default="gpt-4o", show_default=True)
+@click.option("--refine-model-name", type=str, default="gpt-5-mini", show_default=True)
 @click.option(
     "--community-detection-method",
     type=click.Choice(["louvain", "greedy", "label_prop", "k_clique", "spectral"]),
