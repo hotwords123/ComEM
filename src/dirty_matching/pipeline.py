@@ -96,6 +96,7 @@ def run_refine_pipeline(
     predicted_df: pd.DataFrame,
     output_dir: Path,
     refine_model_name: str,
+    community_detection_method: str,
     louvain_resolution: float,
     louvain_seed: int,
     max_community_size: int,
@@ -146,6 +147,7 @@ def run_refine_pipeline(
         max_community_size=max_community_size,
         max_recursion_depth=max_recursion_depth,
         resolution_scale=resolution_scale,
+        method=community_detection_method,
     )
 
     stage1_dir = Path(stage1["files"]["summary_json"]).parent
@@ -264,6 +266,7 @@ def run_default_cora_pipeline() -> dict[str, Any]:
         cluster_layout_norm_quantile=0.9,
         enable_refine=False,
         refine_model_name="gpt-4o",
+        community_detection_method="louvain",
         louvain_resolution=1.0,
         louvain_seed=42,
         max_community_size=10,
@@ -302,6 +305,7 @@ def run_pipeline(
     cluster_layout_norm_quantile: float,
     enable_refine: bool,
     refine_model_name: str,
+    community_detection_method: str,
     louvain_resolution: float,
     louvain_seed: int,
     max_community_size: int,
@@ -403,6 +407,7 @@ def run_pipeline(
             predicted_df=predicted_df,
             output_dir=output_dir,
             refine_model_name=refine_model_name,
+            community_detection_method=community_detection_method,
             louvain_resolution=louvain_resolution,
             louvain_seed=louvain_seed,
             max_community_size=max_community_size,

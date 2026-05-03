@@ -12,6 +12,112 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import to_hex
 
 
+def _split_large_communities(
+    communities: list[set[str]],
+    graph: nx.Graph,
+    max_community_size: int,
+    seed: int,
+) -> list[set[str]]:
+    """递归分割超过最大大小的社区（使用Louvain）。"""
+    if max_community_size < 1:
+        return communities
+
+    final_communities: list[set[str]] = []
+
+    for community in communities:
+        if len(community) <= max_community_size:
+            final_communities.append(community)
+            continue
+
+        subgraph = graph.subgraph(community).copy()
+        if subgraph.number_of_edges() == 0:
+            # 孤立节点或没有边，直接分割
+            for i, node in enumerate(sorted(community)):
+                final_communities.append({node})
+            continue
+
+        # 使用更高的分辨率来分割
+        sub_communities_raw = nx.community.louvain_communities(
+            subgraph,
+            resolution=1.5,
+            seed=seed,
+        )
+        sub_communities = [
+            set(str(node) for node in c) for c in sub_communities_raw
+        ]
+
+        # 递归处理继续超过大小的社区
+        final_communities.extend(
+            _split_large_communities(sub_communities, graph, max_community_size, seed)
+        )
+
+    return final_communities
+
+
+def detect_communities(
+    graph: nx.Graph,
+    method: str = "louvain",
+    max_community_size: int = 10,
+    **kwargs,
+) -> tuple[list[set[str]], dict[str, int], float, dict[str, Any]]:
+    """统一的社区检测接口。
+    
+    Args:
+        graph: 输入图
+        method: 检测方法 ('louvain', 'greedy', 'label_prop', 'k_clique', 'spectral')
+        max_community_size: 最大社区大小限制
+        **kwargs: 方法特定的参数
+    
+    Returns:
+        (communities, node_to_community, modularity, stats)
+    """
+    if graph.number_of_nodes() == 0:
+        return [], {}, 0.0, {"method": method, "enabled": False}
+
+    if method == "louvain":
+        resolution = kwargs.get("resolution", 1.0)
+        seed = kwargs.get("seed", 42)
+        max_depth = kwargs.get("max_depth", 6)
+        resolution_scale = kwargs.get("resolution_scale", 1.25)
+        communities, node_to_community, modularity, stats = (
+            detect_recursive_louvain_communities(
+                graph,
+                resolution=resolution,
+                seed=seed,
+                max_community_size=max_community_size,
+                max_depth=max_depth,
+                resolution_scale=resolution_scale,
+            )
+        )
+    elif method == "greedy":
+        communities, node_to_community, modularity = (
+            detect_greedy_modularity_communities(graph, max_community_size)
+        )
+        stats = {"method": "greedy_modularity", "enabled": False}
+    elif method == "label_prop":
+        seed = kwargs.get("seed", 42)
+        communities, node_to_community, modularity = (
+            detect_label_propagation_communities(graph, max_community_size, seed=seed)
+        )
+        stats = {"method": "label_propagation", "enabled": False}
+    elif method == "k_clique":
+        k = kwargs.get("k", 3)
+        communities, node_to_community, modularity = (
+            detect_k_clique_communities(graph, k=k, max_community_size=max_community_size)
+        )
+        stats = {"method": "k_clique", "k": k, "enabled": False}
+    elif method == "spectral":
+        n_communities = kwargs.get("n_communities", None)
+        communities, node_to_community, modularity = (
+            detect_spectral_communities(graph, n_communities=n_communities, max_community_size=max_community_size)
+        )
+        stats = {"method": "spectral_clustering", "enabled": False}
+    else:
+        raise ValueError(f"Unknown community detection method: {method}")
+
+    return communities, node_to_community, modularity, stats
+
+
 def _parse_bool(value: object) -> bool:
     if pd.isna(value):
         return False
@@ -201,6 +307,198 @@ def detect_recursive_louvain_communities(
         "max_leaf_size": int(max((len(c) for c in final_communities), default=0)),
     }
     return final_communities, node_to_community, modularity, stats
+
+
+def detect_greedy_modularity_communities(
+    graph: nx.Graph,
+    max_community_size: int,
+) -> tuple[list[set[str]], dict[str, int], float]:
+    """贪心模块度优化 - 快速简洁的社区发现算法。"""
+    if graph.number_of_nodes() == 0:
+        return [], {}, 0.0
+
+    communities_raw = list(nx.community.greedy_modularity_communities(graph))
+    communities = [
+        set(str(node) for node in community) for community in communities_raw
+    ]
+
+    # 分割超过最大大小的社区
+    if max_community_size > 0:
+        communities = _split_large_communities(communities, graph, max_community_size, seed=42)
+
+    communities.sort(key=len, reverse=True)
+
+    node_to_community: dict[str, int] = {}
+    for cid, community in enumerate(communities):
+        for node in community:
+            node_to_community[node] = cid
+
+    if graph.number_of_edges() == 0 or not communities:
+        modularity = 0.0
+    else:
+        modularity = float(nx.community.modularity(graph, communities))
+
+    return communities, node_to_community, modularity
+
+
+def detect_label_propagation_communities(
+    graph: nx.Graph,
+    max_community_size: int,
+    seed: int = 42,
+) -> tuple[list[set[str]], dict[str, int], float]:
+    """标签传播算法 - 基于标签在网络中的传播。"""
+    if graph.number_of_nodes() == 0:
+        return [], {}, 0.0
+
+    communities_raw = list(nx.community.label_propagation_communities(graph))
+    communities = [
+        set(str(node) for node in community) for community in communities_raw
+    ]
+
+    # 分割超过最大大小的社区
+    if max_community_size > 0:
+        communities = _split_large_communities(communities, graph, max_community_size, seed=seed)
+
+    communities.sort(key=len, reverse=True)
+
+    node_to_community: dict[str, int] = {}
+    for cid, community in enumerate(communities):
+        for node in community:
+            node_to_community[node] = cid
+
+    if graph.number_of_edges() == 0 or not communities:
+        modularity = 0.0
+    else:
+        modularity = float(nx.community.modularity(graph, communities))
+
+    return communities, node_to_community, modularity
+
+
+def detect_k_clique_communities(
+    graph: nx.Graph,
+    k: int = 3,
+    max_community_size: int = 0,
+) -> tuple[list[set[str]], dict[str, int], float]:
+    """K-团渗透算法 - 基于团的社区发现。
+    
+    Args:
+        graph: 输入图
+        k: 最小团大小（默认=3）
+        max_community_size: 最大社区大小限制（0表示无限制）
+    """
+    if graph.number_of_nodes() == 0:
+        return [], {}, 0.0
+
+    try:
+        cliques = list(nx.community.k_clique_communities(graph, k=k))
+        if not cliques:
+            # 如果没找到k-clique，降低k值
+            k = max(2, k - 1)
+            cliques = list(nx.community.k_clique_communities(graph, k=k))
+
+        communities = [set(str(node) for node in clique) for clique in cliques]
+
+        # 分割超过最大大小的社区
+        if max_community_size > 0:
+            communities = _split_large_communities(
+                communities, graph, max_community_size, seed=42
+            )
+
+        communities.sort(key=len, reverse=True)
+
+        node_to_community: dict[str, int] = {}
+        for cid, community in enumerate(communities):
+            for node in community:
+                node_to_community[node] = cid
+
+        if graph.number_of_edges() == 0 or not communities:
+            modularity = 0.0
+        else:
+            modularity = float(nx.community.modularity(graph, communities))
+
+        return communities, node_to_community, modularity
+    except Exception as e:
+        # 如果k-clique失败，回退到标签传播
+        print(f"K-clique communities failed: {e}. Using label propagation instead.")
+        return detect_label_propagation_communities(graph, max_community_size)
+
+
+def detect_spectral_communities(
+    graph: nx.Graph,
+    n_communities: int | None = None,
+    max_community_size: int = 0,
+) -> tuple[list[set[str]], dict[str, int], float]:
+    """谱聚类 - 基于图的拉普拉斯矩阵进行聚类。
+    
+    Args:
+        graph: 输入图
+        n_communities: 社区数量（None为自动）
+        max_community_size: 最大社区大小限制
+    """
+    if graph.number_of_nodes() == 0:
+        return [], {}, 0.0
+
+    try:
+        import numpy as np
+        from sklearn.cluster import SpectralClustering
+
+        # 获取邻接矩阵
+        nodes = sorted(str(node) for node in graph.nodes())
+        node_to_idx = {node: idx for idx, node in enumerate(nodes)}
+
+        # 构建邻接矩阵
+        n = len(nodes)
+        adj_matrix = np.zeros((n, n))
+        for u, v in graph.edges():
+            u_str, v_str = str(u), str(v)
+            if u_str in node_to_idx and v_str in node_to_idx:
+                i, j = node_to_idx[u_str], node_to_idx[v_str]
+                adj_matrix[i, j] = 1
+                adj_matrix[j, i] = 1
+
+        # 确定聚类数
+        if n_communities is None:
+            # 使用 Louvain 来估计社区数
+            communities_est = list(nx.community.louvain_communities(graph, seed=42))
+            n_communities = len(communities_est)
+        n_communities = max(1, min(n_communities, len(nodes)))
+
+        # 谱聚类
+        clustering = SpectralClustering(
+            n_clusters=n_communities, affinity="precomputed", random_state=42
+        )
+        labels = clustering.fit_predict(adj_matrix)
+
+        # 转换为社区
+        communities: list[set[str]] = [set() for _ in range(n_communities)]
+        for idx, label in enumerate(labels):
+            communities[label].add(nodes[idx])
+
+        # 移除空社区
+        communities = [c for c in communities if c]
+
+        # 分割超过最大大小的社区
+        if max_community_size > 0:
+            communities = _split_large_communities(
+                communities, graph, max_community_size, seed=42
+            )
+
+        communities.sort(key=len, reverse=True)
+
+        node_to_community: dict[str, int] = {}
+        for cid, community in enumerate(communities):
+            for node in community:
+                node_to_community[node] = cid
+
+        if graph.number_of_edges() == 0 or not communities:
+            modularity = 0.0
+        else:
+            modularity = float(nx.community.modularity(graph, communities))
+
+        return communities, node_to_community, modularity
+    except ImportError:
+        print("Spectral clustering requires scikit-learn. Using label propagation instead.")
+        return detect_label_propagation_communities(graph, max_community_size)
 
 
 def _community_color_map(community_ids: list[int]) -> dict[int, str]:
@@ -400,7 +698,7 @@ def save_outputs(
 
 
 @click.command(
-    help="Run Louvain community detection for matching predictions and visualize communities."
+    help="Run community detection for matching predictions and visualize communities."
 )
 @click.option(
     "--predictions-csv",
@@ -415,6 +713,15 @@ def save_outputs(
     show_default=True,
     help="Which boolean column defines graph edges.",
 )
+@click.option(
+    "--method",
+    type=click.Choice(
+        ["louvain", "greedy", "label_prop", "k_clique", "spectral"]
+    ),
+    default="louvain",
+    show_default=True,
+    help="Community detection method to use.",
+)
 @click.option("--resolution", type=float, default=1.0, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
 @click.option(
@@ -422,21 +729,28 @@ def save_outputs(
     type=int,
     default=10,
     show_default=True,
-    help="Recursively split communities larger than this size.",
+    help="Maximum community size. Communities larger than this will be split.",
 )
 @click.option(
     "--max-recursion-depth",
     type=int,
     default=6,
     show_default=True,
-    help="Stop recursive splitting when this depth is reached.",
+    help="(Only for Louvain) Stop recursive splitting at this depth.",
 )
 @click.option(
     "--resolution-scale",
     type=float,
     default=1.25,
     show_default=True,
-    help="Resolution multiplier applied at each recursive split.",
+    help="(Only for Louvain) Resolution multiplier at each recursive level.",
+)
+@click.option(
+    "--k-clique-size",
+    type=int,
+    default=3,
+    show_default=True,
+    help="(Only for K-Clique) Minimum clique size.",
 )
 @click.option(
     "--output-dir",
@@ -447,42 +761,71 @@ def save_outputs(
 def main(
     predictions_csv: Path,
     edge_column: str,
+    method: str,
     resolution: float,
     seed: int,
     max_community_size: int,
     max_recursion_depth: int,
     resolution_scale: float,
+    k_clique_size: int,
     output_dir: Path | None,
 ) -> None:
     df = load_predictions(predictions_csv)
     graph = build_graph(df, edge_column=edge_column)
-    communities, node_to_community, modularity, recursion_stats = (
-        detect_recursive_louvain_communities(
-            graph,
-            resolution=resolution,
-            seed=seed,
-            max_community_size=max_community_size,
-            max_depth=max_recursion_depth,
-            resolution_scale=resolution_scale,
-        )
-    )
-
     out_dir = output_dir if output_dir is not None else predictions_csv.parent
-    title = (
-        f"Recursive Louvain Communities ({predictions_csv.stem}, edge={edge_column})"
-    )
+
+    # 运行对应的社区发现算法
+    if method == "louvain":
+        communities, node_to_community, modularity, recursion_stats = (
+            detect_recursive_louvain_communities(
+                graph,
+                resolution=resolution,
+                seed=seed,
+                max_community_size=max_community_size,
+                max_depth=max_recursion_depth,
+                resolution_scale=resolution_scale,
+            )
+        )
+        method_name = "recursive_louvain"
+        extra_stats = recursion_stats
+    elif method == "greedy":
+        communities, node_to_community, modularity = (
+            detect_greedy_modularity_communities(graph, max_community_size)
+        )
+        extra_stats = {"enabled": False}
+        method_name = "greedy_modularity"
+    elif method == "label_prop":
+        communities, node_to_community, modularity = (
+            detect_label_propagation_communities(graph, max_community_size, seed=seed)
+        )
+        extra_stats = {"enabled": False}
+        method_name = "label_propagation"
+    elif method == "k_clique":
+        communities, node_to_community, modularity = (
+            detect_k_clique_communities(graph, k=k_clique_size, max_community_size=max_community_size)
+        )
+        extra_stats = {"k_clique_size": k_clique_size, "enabled": False}
+        method_name = "k_clique"
+    else:  # spectral
+        communities, node_to_community, modularity = (
+            detect_spectral_communities(graph, max_community_size=max_community_size)
+        )
+        extra_stats = {"enabled": False}
+        method_name = "spectral_clustering"
+
+    title = f"Community Detection ({predictions_csv.stem}, method={method}, edge={edge_column})"
 
     visualize_png(
         graph,
         node_to_community,
-        out_png=out_dir / "louvain_community_graph.png",
+        out_png=out_dir / "community_graph.png",
         title=title,
         seed=seed,
     )
     visualize_html(
         graph,
         node_to_community,
-        out_html=out_dir / "louvain_community_graph.html",
+        out_html=out_dir / "community_graph.html",
         title=title,
         seed=seed,
     )
@@ -493,19 +836,21 @@ def main(
         communities,
         modularity,
         out_dir=out_dir,
-        community_method="recursive_louvain",
-        recursion_stats=recursion_stats,
+        community_method=method_name,
+        recursion_stats=extra_stats,
     )
 
-    print("Louvain run completed.")
+    print("Community detection completed.")
     print(
         json.dumps(
             {
+                "method": method,
                 "nodes": graph.number_of_nodes(),
                 "edges": graph.number_of_edges(),
                 "communities": len(communities),
                 "modularity": modularity,
-                "recursive": recursion_stats,
+                "max_community_size": max((len(c) for c in communities), default=0),
+                "method_stats": extra_stats,
                 "files": files,
             },
             ensure_ascii=True,

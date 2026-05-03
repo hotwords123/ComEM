@@ -8,7 +8,7 @@ import networkx as nx
 import pandas as pd
 
 from src.louvain_community import (
-    detect_recursive_louvain_communities,
+    detect_communities,
     visualize_html as visualize_louvain_html,
     visualize_png as visualize_louvain_png,
 )
@@ -17,12 +17,27 @@ from src.louvain_community import (
 def stage1_filter_and_split(
     graph: nx.Graph,
     out_dir: Path,
-    resolution: float,
-    seed: int,
-    max_community_size: int,
-    max_recursion_depth: int,
-    resolution_scale: float,
+    resolution: float = 1.0,
+    seed: int = 42,
+    max_community_size: int = 10,
+    max_recursion_depth: int = 6,
+    resolution_scale: float = 1.25,
+    method: str = "louvain",
+    **method_kwargs,
 ) -> dict[str, Any]:
+    """社区检测和划分。
+    
+    Args:
+        graph: 输入图
+        out_dir: 输出目录
+        resolution: (Louvain) 分辨率参数
+        seed: 随机种子
+        max_community_size: 最大社区大小
+        max_recursion_depth: (Louvain) 最大递归深度
+        resolution_scale: (Louvain) 分辨率缩放因子
+        method: 社区检测方法 ('louvain', 'greedy', 'label_prop', 'k_clique', 'spectral')
+        **method_kwargs: 方法特定的其他参数
+    """
     stage_dir = out_dir / "stage1_partition"
     stage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -32,13 +47,8 @@ def stage1_filter_and_split(
             "edges": 0,
             "communities": 0,
             "modularity": 0.0,
-            "recursive": {
-                "enabled": True,
-                "max_community_size": int(max_community_size),
-                "max_depth": int(max_recursion_depth),
-                "base_resolution": float(resolution),
-                "resolution_scale": float(resolution_scale),
-            },
+            "method": method,
+            "method_stats": {},
         }
         summary_path = stage_dir / "summary.json"
         with summary_path.open("w", encoding="utf-8") as f:
@@ -50,17 +60,24 @@ def stage1_filter_and_split(
             "files": {"summary_json": str(summary_path)},
         }
 
-    communities, node_to_community, modularity, recursive_stats = (
-        detect_recursive_louvain_communities(
-            graph,
-            resolution=resolution,
-            seed=seed,
-            max_community_size=max_community_size,
-            max_depth=max_recursion_depth,
-            resolution_scale=resolution_scale,
-        )
+    # 构建方法参数
+    params = {
+        "resolution": resolution,
+        "seed": seed,
+        "max_depth": max_recursion_depth,
+        "resolution_scale": resolution_scale,
+    }
+    params.update(method_kwargs)
+
+    # 运行社区检测
+    communities, node_to_community, modularity, method_stats = detect_communities(
+        graph,
+        method=method,
+        max_community_size=max_community_size,
+        **params,
     )
 
+    # 输出社区分配CSV
     rows = []
     for node in sorted(str(node) for node in graph.nodes()):
         rows.append(
@@ -80,15 +97,16 @@ def stage1_filter_and_split(
         "communities": int(len(communities)),
         "community_sizes_top10": [int(v) for v in sizes[:10]],
         "modularity": float(modularity),
-        "recursive": recursive_stats,
+        "method": method,
+        "method_stats": method_stats,
     }
     summary_path = stage_dir / "summary.json"
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=True, indent=2)
 
-    png_path = stage_dir / "louvain_partition.png"
-    html_path = stage_dir / "louvain_partition.html"
-    title = "Stage1 Recursive Louvain Partition"
+    png_path = stage_dir / "partition.png"
+    html_path = stage_dir / "partition.html"
+    title = f"Stage1 Community Partition ({method})"
     visualize_louvain_png(
         graph=graph,
         node_to_community=node_to_community,

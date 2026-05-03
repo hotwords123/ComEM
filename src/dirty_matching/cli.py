@@ -75,6 +75,13 @@ from src.dirty_matching.pipeline import run_pipeline
     help="Enable four-stage refine ER pipeline (Louvain + local/global LLM resolving).",
 )
 @click.option("--refine-model-name", type=str, default="gpt-4o", show_default=True)
+@click.option(
+    "--community-detection-method",
+    type=click.Choice(["louvain", "greedy", "label_prop", "k_clique", "spectral"]),
+    default="louvain",
+    show_default=True,
+    help="Community detection algorithm for stage1 partitioning.",
+)
 @click.option("--louvain-resolution", type=float, default=1.0, show_default=True)
 @click.option("--louvain-seed", type=int, default=42, show_default=True)
 @click.option("--max-community-size", type=int, default=10, show_default=True)
