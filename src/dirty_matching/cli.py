@@ -10,12 +10,17 @@ from src.dirty_matching.pipeline import run_pipeline
 @click.command(
     help="Run dirty ER matching evaluation, build a match graph, and audit transitivity violations."
 )
-@click.option("--dataset-name", type=str, default="cora", show_default=True)
+@click.option(
+    "--dataset-name",
+    type=click.Choice(["cora", "wdc", "cddb", "musicbrainz"], case_sensitive=False),
+    default="cora",
+    show_default=True,
+)
 @click.option(
     "--reader-root",
     type=click.Path(path_type=Path),
-    default=Path("data/pyJedAI/data/der/cora"),
-    show_default=True,
+    default=None,
+    show_default=False,
 )
 @click.option("--candidates-csv", type=click.Path(path_type=Path), default=None)
 @click.option("--model-name", type=str, default="gpt-4o-mini", show_default=True)
@@ -29,6 +34,12 @@ from src.dirty_matching.pipeline import run_pipeline
 )
 @click.option("--sample-frac", type=float, default=None)
 @click.option("--sample-n", type=int, default=200, show_default=True)
+@click.option(
+    "--sample-cluster-n",
+    type=int,
+    default=None,
+    help="Sample N clusters (take all records in each sampled cluster).",
+)
 @click.option("--sample-seed", type=int, default=42, show_default=True)
 @click.option(
     "--cluster-layout-k",
@@ -59,8 +70,7 @@ from src.dirty_matching.pipeline import run_pipeline
 @click.option(
     "--output-dir",
     type=click.Path(path_type=Path),
-    default=Path("results/dirty_matching/cora"),
-    show_default=True,
+    required=True,
 )
 @click.option(
     "--force-rebuild-index",

@@ -135,10 +135,12 @@ def sample_entity_table(
     entity_table: pd.DataFrame,
     sample_frac: float | None = None,
     sample_n: int | None = None,
+    sample_cluster_n: int | None = None,
     sample_seed: int = 42,
 ) -> pd.DataFrame:
-    if sample_frac is not None and sample_n is not None:
-        raise ValueError("Use either sample_frac or sample_n, not both")
+    sampling_args = [sample_frac is not None, sample_n is not None, sample_cluster_n is not None]
+    if sum(sampling_args) > 1:
+        raise ValueError("Use only one of sample_frac, sample_n, or sample_cluster_n")
 
     if sample_frac is not None:
         if not 0 < sample_frac <= 1:
@@ -149,6 +151,28 @@ def sample_entity_table(
             raise ValueError("sample_n must be > 0")
         sample_n = min(sample_n, len(entity_table))
         sampled = entity_table.sample(n=sample_n, random_state=sample_seed)
+    elif sample_cluster_n is not None:
+        if sample_cluster_n <= 0:
+            raise ValueError("sample_cluster_n must be > 0")
+
+        if "cluster_id" not in entity_table.columns:
+            raise ValueError("entity_table is missing required column: cluster_id")
+
+        cluster_ids = (
+            entity_table["cluster_id"]
+            .dropna()
+            .astype(str)
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+        if len(cluster_ids) == 0:
+            raise ValueError("No valid cluster_id values found in entity_table")
+
+        sample_cluster_n = min(sample_cluster_n, int(len(cluster_ids)))
+        sampled_cluster_ids = set(
+            cluster_ids.sample(n=sample_cluster_n, random_state=sample_seed).tolist()
+        )
+        sampled = entity_table[entity_table["cluster_id"].astype(str).isin(sampled_cluster_ids)]
     else:
         sampled = entity_table
 
@@ -167,6 +191,7 @@ def run_dirty_pipeline(
     force_rebuild_index: bool = False,
     sample_frac: float | None = None,
     sample_n: int | None = None,
+    sample_cluster_n: int | None = None,
     sample_seed: int = 42,
 ):
     adapter = get_entity_table_adapter(dataset_name, reader_root)
@@ -175,19 +200,37 @@ def run_dirty_pipeline(
         full_entity_table,
         sample_frac=sample_frac,
         sample_n=sample_n,
+        sample_cluster_n=sample_cluster_n,
         sample_seed=sample_seed,
     )
+
+    sampled_subset = len(entity_table) != len(full_entity_table)
+    if sampled_subset and not force_rebuild_index:
+        force_rebuild_index = True
+
     if len(entity_table) != len(full_entity_table):
+        full_clusters = int(full_entity_table["cluster_id"].nunique()) if "cluster_id" in full_entity_table.columns else None
+        sampled_clusters = int(entity_table["cluster_id"].nunique()) if "cluster_id" in entity_table.columns else None
         print(
             "Sampling subset: "
-            f"{len(entity_table)}/{len(full_entity_table)} entities "
-            f"(seed={sample_seed})"
+            f"{len(entity_table)}/{len(full_entity_table)} entities"
+            + (
+                " "
+                + f"({sampled_clusters}/{full_clusters} clusters)"
+                if (sampled_clusters is not None and full_clusters is not None)
+                else ""
+            )
+            + f" (seed={sample_seed})"
         )
 
     candidates = build_candidates(
         entity_table,
         topk=topk,
-        index_name=f"{dataset_name}-dirty-index",
+        index_name=(
+            f"{dataset_name}-dirty-index-gt"
+            if dataset_name == "cddb"
+            else f"{dataset_name}-dirty-index"
+        ),
         force_rebuild_index=force_rebuild_index,
     )
 
@@ -205,7 +248,7 @@ if __name__ == "__main__":
         "--dataset",
         dest="dataset_name",
         default="cora",
-        choices=["cora", "wdc"],
+        choices=["cora", "wdc", "cddb", "musicbrainz"],
         help="Dataset name (default: cora)",
     )
     parser.add_argument("--reader-root", type=Path, default=None)
@@ -214,6 +257,12 @@ if __name__ == "__main__":
     parser.add_argument("--force-rebuild-index", action="store_true")
     parser.add_argument("--sample-frac", type=float, default=None)
     parser.add_argument("--sample-n", type=int, default=None)
+    parser.add_argument(
+        "--sample-cluster-n",
+        type=int,
+        default=None,
+        help="Sample N clusters (take all records in each sampled cluster)",
+    )
     parser.add_argument("--sample-seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -224,6 +273,12 @@ if __name__ == "__main__":
         elif args.dataset_name == "wdc":
             default_reader_root = Path("data/wdc")
             default_output_path = Path("data/llm4em/dirty/wdc.csv")
+        elif args.dataset_name == "cddb":
+            default_reader_root = Path("data/pyJedAI/data/der/cddb")
+            default_output_path = Path("data/llm4em/dirty/cddb.csv")
+        elif args.dataset_name == "musicbrainz":
+            default_reader_root = Path("data/musicbrainz")
+            default_output_path = Path("data/llm4em/dirty/musicbrainz.csv")
         else:
             raise ValueError(f"Unsupported dataset: {args.dataset_name}")
 
@@ -241,5 +296,6 @@ if __name__ == "__main__":
         force_rebuild_index=args.force_rebuild_index,
         sample_frac=args.sample_frac,
         sample_n=args.sample_n,
+        sample_cluster_n=args.sample_cluster_n,
         sample_seed=args.sample_seed,
     )

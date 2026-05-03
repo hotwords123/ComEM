@@ -48,6 +48,7 @@ def load_or_generate_candidates(
     force_rebuild_index: bool,
     sample_frac: float | None,
     sample_n: int | None,
+    sample_cluster_n: int | None,
     sample_seed: int,
 ) -> pd.DataFrame:
     if candidates_csv is not None:
@@ -61,5 +62,6 @@ def load_or_generate_candidates(
         force_rebuild_index=force_rebuild_index,
         sample_frac=sample_frac,
         sample_n=sample_n,
+        sample_cluster_n=sample_cluster_n,
         sample_seed=sample_seed,
     )

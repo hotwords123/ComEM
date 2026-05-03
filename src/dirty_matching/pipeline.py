@@ -296,6 +296,7 @@ def run_pipeline(
     force_rebuild_index: bool,
     sample_frac: float | None,
     sample_n: int | None,
+    sample_cluster_n: int | None,
     sample_seed: int,
     max_workers: int,
     violation_mode: str,
@@ -333,6 +334,7 @@ def run_pipeline(
         force_rebuild_index=force_rebuild_index,
         sample_frac=sample_frac,
         sample_n=sample_n,
+        sample_cluster_n=sample_cluster_n,
         sample_seed=sample_seed,
     )
 
@@ -378,6 +380,7 @@ def run_pipeline(
         "topk": topk,
         "sample_frac": sample_frac,
         "sample_n": sample_n,
+        "sample_cluster_n": sample_cluster_n,
         "sample_seed": sample_seed,
         "visualization": {
             "cluster_layout_k": cluster_layout_k,
